@@ -1,0 +1,167 @@
+---
+title: "Practical Machine Learning - Prediction Assignment"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+
+## Background  
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).  
+
+## Data   
+
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.  
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv  
+
+The test data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv  
+
+```{r download}
+# Load the data, removing the likely unavialbe information   
+Test <- read.csv("pml-testing.csv", na.strings = c("", "NA", "#DIV/0!")) 
+Train <- read.csv("pml-training.csv", na.strings = c("", "NA", "#DIV/0!")) 
+```
+
+
+### Initial Exploration & Cleaning  
+Need to explore the dataset in order to have an improved understanding of the available data, before attempting to tidy the data.   
+```{r Explore, eval=FALSE}
+# Dimensions of data  
+dim(Train)
+head(Train)
+summary(Train)
+sapply(Train, class)
+table(Train$classe)
+duplicated(colnames(Train))
+```
+
+> The training data has 19622 instances with 160 attributes, which might be worth reducing. Experimented with removing data columns with high percentages of NA information. Removing either 50% or 95% NAs both resulted in 60 attributes remaining.   
+
+```{r Reductions}
+CTrain <- Train[, -which(colMeans(is.na(Train)) > .5)]
+dim(CTrain)
+CTrain <- Train[, -which(colMeans(is.na(Train)) > .95)]
+dim(CTrain)
+```
+
+### Explore distribution breakdown  
+Continued exploring the kind of data inside the dataset. Played around with the users versus data as well as the expected classe versus data pertinent to the course. Then removed the superfluous columns in order to streamline and improve the modeling predictions.    
+```{r Exploration}
+levels(CTrain$user_name)
+Upercent <- prop.table(table(CTrain$user_name)) * 100
+cbind(freq = table(Train$user_name), percentage = Upercent)
+plot(Train$user_name, )
+
+levels(CTrain$classe)
+Cpercent <- prop.table(table(CTrain$classe)) * 100
+cbind(freq = table(Train$classe), percentage = Cpercent)
+plot(Train$classe, )
+
+### Remove likely unnecessary columns
+TempTrain <- !names(CTrain) %in% 
+  c('X', 'user_name', 'raw_timestamp_part_1', 'raw_timestamp_part_2',
+    'cvtd_timestamp', 'new_window')
+CTrain <- CTrain[, TempTrain]
+```
+
+### Partition the training data for crossvalidation  
+Basic preparation of the training data to create a training and testing dataset that did not impede on the actual testing data.  
+```{r Prep, eval=FALSE}
+PTrain <- createDataPartition(CTrain$classe, p = 0.6)[[1]]
+CrossV <- CTrain[-PTrain,]
+PTrain <- CTrain[ PTrain, ]
+PTrain <- createDataPartition(CrossV$classe, p = 0.75)[[1]]
+CrossVtest <- CrossV[-PTrain, ]
+CrossV <- CrossV[PTrain, ]
+```
+
+### Train different models  
+Attempted three different models. The Random Forest had the highest accuracy and lowest in-sample/out-of-sample error, so that one was selected. Additionally, the model was excellent in crossvalidation tests.    
+```{r Models, eval=FALSE}
+mod1 <- train(classe ~ ., data=CTrain, method="rf")
+mod2 <- train(classe ~ ., data=CTrain, method="gbm")
+mod3 <- train(classe ~ ., data=CTrain, method="lda")
+
+pred1 <- predict(mod1, CrossV)
+pred2 <- predict(mod2, CrossV)
+pred3 <- predict(mod3, CrossV)
+
+### Confusion Matrices  
+confusionMatrix(pred1, CrossV$classe)
+confusionMatrix(pred2, CrossV$classe)
+confusionMatrix(pred3, CrossV$classe)
+
+### Create Combination Model  
+
+Cmodel <- data.frame(pred1, pred2, classe=CrossV$classe)
+Cmodel2 <- data.frame(pred2, pred3, classe=CrossV$classe)
+Cmodel3 <- data.frame(pred1, pred2, pred3, classe=CrossV$classe)
+
+CmodelFit <- train(classe ~ ., method="rf", data=Cmodel)
+CmodelFit2 <- train(classe ~ ., method="rf", data=Cmodel2)
+CmodelFit3 <- train(classe ~ ., method="rf", data=Cmodel3)
+
+#### in-sample error
+CmodelFitIn <- predict(CmodelFit, Cmodel)
+CmodelFitIn2 <- predict(CmodelFit2, Cmodel)
+CmodelFitIn3 <- predict(CmodelFit3, Cmodel)
+confusionMatrix(CmodelFitIn, Cmodel$classe)
+confusionMatrix(CmodelFitIn2, Cmodel$classe)
+confusionMatrix(CmodelFitIn3, Cmodel$classe)
+
+# ERROR NEEDS WORK out-of-sample error
+pred1 <- predict(mod1, CrossV)
+pred3 <- predict(mod3, CrossV)
+confusionMatrix(pred1, CrossVtest$classe)
+```
+
+### Random Forest  
+The Random Forest model with a 5-fold cross validation will be used as the predictor rather than the other methods or a combination of methods.  
+* RF handls large input well, including when the interacations are unknown.  
+* RF has built-in cross-validation that estimates the out-of-sample error rate.  
+
+Then, I explored the model with various data visualizations, including a list of the top variables.  
+```{r RF}
+RFmodel <- train(classe ~., data=CTrain, method = "rf", 
+                 trControl = trainControl(method = "cv", number = 5))
+save(RFmodel, file = "RFmodel2.Rda")
+print(RFmodel)
+
+plot(RFmodel)
+
+varImp(RFmodel)
+plot(varImp(RFmodel))
+plot(varImp(RFmodel), main = "Importance of Top 30 Variables", top = 30)
+plot(varImp(RFmodel), main = "Importance of Top 15 Variables", top = 15)
+plot(varImp(RFmodel), main = "Importance of Top 10 Variables", top = 10)
+
+RFmodel$finalModel
+```
+> Overall, this model has a low error rate, consistently under .16%.   
+
+#### Let's test the prediction  
+Intersected the cleaned training data with the testing data to ensure that I had the same variables, and then ran predictions against the testing data.  
+```{r Test}
+CTest <- Test[ , intersect(names(CTrain), names(Test))]
+RFpredict <- predict(RFmodel, CTest)
+confusionMatrix(RFmodel, Test$classe)
+```
+> The accuracy remains high, consistently over 99.8% accuracy. 
+
+
+
+
+
